@@ -2,6 +2,7 @@
 import re
 import os
 import sys
+import subprocess
 from datetime import datetime
 from sympy.core import numbers
 from sympy.solvers import solve
@@ -26,14 +27,31 @@ def HELP_FUNCTION_GET_BLOCKS_COUNT(input):
 def hadoopSimulation(args):
 	start = datetime.now()
 
+	os.system("rm FinalResults")
+
 	resultsCount = 0
 	equationsExists = True
-	os.system('cat InitInputEquations | python3.3 Solver.py mapInitData | sort -n | cat > InputEquations')
+
+	MapInitDataCommand = 'cat InitInputEquations | sort -k1,1 -n | python3.3 Solver.py mapInitData | sort -k1,1 -n | cat > InputEquations'
+	SplitEquationsCommand = "cat InputEquations | python3.3 Solver.py mapEquationsToNodes | sort -k1,1 -k2,2 -n | cat > InputEquationsSplit"
+	ComputeEquationBlockCommand = "cat InputEquationsSplit | grep -P '^{0}\t' | python3.3 Solver.py computeEquationPart | sort | cat > OutputResults{0}"
+	MergeResultsCommand = "cat OutputResults* | python3.3 Solver.py mergeResults | sort -n | cat > MergedResults"
+	MapResultForSimplificationCommand = "cat MergedResults | python3.3 Solver.py mapResultForSimplification {0} | cat > ResultsForSimplification"
+	JoinResultsWithEquationsMapCommand = "cat MergedResults InputEquationsSplit | sort -k1,1 -n | python3.3 Solver.py joinResultsWithEquationsMap | sort -k1,2 -n | python3.3 Solver.py joinResultsWithEquationsReduce | cat > EquationsWithResults"
+	JoinEquationsWithResultForSimplificationMapCommand = "cat EquationsWithResults ResultsForSimplification | sort -k1,1 -n | python3.3 Solver.py joinEquationsWithResultForSimplificationMap | sort -k1,1 -n | python3.3 Solver.py joinEquationsWithResultForSimplificationReduce | cat > EquationsWithResultsForSimplification"
+	SimplifyEquationsCommand = "cat EquationsWithResultsForSimplification | grep -P '^{0}\t' | sort -k1,1 -n -k2,2 -n | python3.3 Solver.py simplifyEquations | cat > SimplificationResult{0}"
+	MergeSimplificationResultsCommand = "cat SimplificationResult* | python3.3 Solver.py mergeSimplificationEquations | sort -k1,1 -n | cat > {0}"
+	CollectFinalResultsCommand = "cat MergedResults FinalResults | python3.3 Solver.py grabFinalResults | cat > FinalResults"
+	ReplaceVariablesWithFinalResultsCommand = "cat FinalResults InitInputEquations | sort -k1,1 -n | python3.3 Solver.py replaceVariablesWithResults | cat > InputEquations"
+
+	p = subprocess.Popen(MapInitDataCommand, shell=True)
+	p.wait()
 
 	print("Start computation: {0}\n".format(str(datetime.now())))
 	while equationsExists:
 		operationStart = datetime.now()
-		os.system("cat InputEquations | python3.3 Solver.py mapEquationsToNodes | sort -k1,1 -k2,2 -n | cat > InputEquationsSplit")
+		p = subprocess.Popen(SplitEquationsCommand, shell=True)
+		p.wait()
 		operationEnd = datetime.now()
 		print("Splitting equations to blocks finished, execution time: {0}\n".format(str(operationEnd - operationStart)))
 		blocksCount = HELP_FUNCTION_GET_BLOCKS_COUNT('InputEquationsSplit')
@@ -43,14 +61,17 @@ def hadoopSimulation(args):
 
 		operationStart = datetime.now()
 		if not equationsExists:
-			return
+			break
 		for reducerNumber in range(blocksCount):
-			os.system("cat InputEquationsSplit | grep -P '^{0}\t' | python3.3 Solver.py computeEquationPart | sort | cat > OutputResults{0}".format(reducerNumber))
+			p = subprocess.Popen(ComputeEquationBlockCommand.format(reducerNumber), shell=True)
+			p.wait()
 		operationEnd = datetime.now()
 		print("Computing results in blocks finished, execution time: {0}\n".format(str(operationEnd - operationStart)))
 
 		operationStart = datetime.now()
-		os.system("cat OutputResults* | python3.3 Solver.py mergeResults | sort -n | cat > MergedResults")
+		p = subprocess.Popen(MergeResultsCommand, shell=True)
+		p.wait()
+
 		os.system("rm OutputResults*")
 		finalResultsCount = getFinalResultsCount("MergedResults")
 		resultsCount += finalResultsCount
@@ -60,9 +81,12 @@ def hadoopSimulation(args):
 		if finalResultsCount == 0:
 			operationStart = datetime.now()
 			blocksCount = getBlocksCount("InputEquationsSplit")
-			os.system("cat MergedResults | python3.3 Solver.py mapResultForSimplification {0} | cat > ResultsForSimplification".format(blocksCount))
-			os.system("cat MergedResults InputEquationsSplit | sort -k1,1 -n | python3.3 Solver.py joinResultsWithEquationsMap | sort -k1,2 -n | python3.3 Solver.py joinResultsWithEquationsReduce | cat > EquationsWithResults")
-			os.system("cat EquationsWithResults ResultsForSimplification | sort -k1,1 -n | python3.3 Solver.py joinEquationsWithResultForSimplificationMap | sort -k1,1 -n | python3.3 Solver.py joinEquationsWithResultForSimplificationReduce | cat > EquationsWithResultsForSimplification")
+			p = subprocess.Popen(MapResultForSimplificationCommand.format(blocksCount), shell=True)
+			p.wait()
+			p = subprocess.Popen(JoinResultsWithEquationsMapCommand, shell=True)
+			p.wait()
+			p = subprocess.Popen(JoinEquationsWithResultForSimplificationMapCommand, shell=True)
+			p.wait()
 
 			os.system("rm ResultsForSimplification")
 			os.system("rm EquationsWithResults")
@@ -72,21 +96,29 @@ def hadoopSimulation(args):
 
 			operationStart = datetime.now()
 			for blockNumber in range(blocksCount):
-				os.system("cat EquationsWithResultsForSimplification | grep -P '^{0}\t' | sort -k1,1 -n -k2,2 -n | python3.3 Solver.py simplifyEquations | cat > SimplificationResult{0}".format(blockNumber))
+				p = subprocess.Popen(SimplifyEquationsCommand.format(blockNumber), shell=True)
+				p.wait()
 			operationEnd = datetime.now()
 			print("Results simplification finished, execution time: {0}\n".format(str(operationEnd - operationStart)))
 
 			os.system("rm EquationsWithResultsForSimplification")
-			os.system("cat SimplificationResult* | python3.3 Solver.py mergeSimplificationEquations | sort -k1,1 -n | cat > InputEquations")
-			os.system("cat SimplificationResult* | python3.3 Solver.py mergeSimplificationEquations | sort -k1,1 -n | cat > UndeterminedResults")
+			p = subprocess.Popen(MergeSimplificationResultsCommand.format("InputEquations"), shell=True)
+			p.wait()
+			p = subprocess.Popen(MergeSimplificationResultsCommand.format("UndeterminedResults"), shell=True)
+			p.wait()
 			os.system("rm SimplificationResult*")
 		else:
 			operationStart = datetime.now()
-			os.system("cat MergedResults | python3.3 Solver.py grabFinalResults | cat > FinalResults")
-			os.system("cat FinalResults InitInputEquations | sort -k1,1 -n | python3.3 Solver.py replaceVariablesWithResults | cat > InputEquations")
+			p = subprocess.Popen(CollectFinalResultsCommand, shell=True)
+			p.wait()
+			p = subprocess.Popen(ReplaceVariablesWithFinalResultsCommand, shell=True)
+			p.wait()
 			operationEnd = datetime.now()
 			print("Results in equations replaced: {0}\n".format(str(operationEnd - operationStart)))
 		os.system("rm MergedResults")
+	os.system("rm InputEquations")
+	os.system("rm InputEquationsSplit")
+	os.system("rm UndeterminedResults")
 	end = datetime.now()
 	print('Execution time is {0}'.format(str(end - start)))
 
@@ -115,11 +147,9 @@ def getBlocksCount(splitEquationsFile):
 
 
 def mapInitData():
-	i = 0
 	for equation in sys.stdin:
-		equation = equation.strip()
-		print('{0}\t{1}'.format(i, equation))
-		i += 1
+		equationIndex, equation = equation.strip().split('\t')
+		print('{0}\t{1}'.format(equationIndex, equation))
 
 
 def mapEquationsToNodes():
@@ -211,26 +241,25 @@ def grabFinalResults():
 	for result in sys.stdin:
 		block, index, resultKey, resultValue = result.strip().split('\t')
 		if checkIfResultReady(resultValue):
-			print('{0}\t{1}\t{2}'.format("-1", resultKey, resultValue))
+			print('{0}\t{1}\t{2}\t{3}'.format("-1", index, resultKey, resultValue))
 
 
 def replaceVariablesWithResults():
 	results = {}
-	equationIndex = 0
 	for line in sys.stdin:
 		splits = line.strip().split('\t')
-		if len(splits) == 3:
-			resultKey = splits[1]
-			resultValue = splits[2]
+		if len(splits) != 2:
+			resultKey = splits[2]
+			resultValue = splits[3]
 			results[resultKey] = resultValue
 		else:
-			equation = splits[0]
+			equationIndex = splits[0]
+			equation = splits[1]
 			for resultKey in results.keys():
 				equation = replaceSymbol(equation, resultKey, results[resultKey])
 			simplifiedEquation = simplify(equation)
 			if not isinstance(simplifiedEquation, numbers.Zero):
 				print('{0}\t{1}'.format(equationIndex, simplifiedEquation))
-				equationIndex += 1
 
 
 def mergeSimplificationEquations():
