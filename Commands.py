@@ -10,4 +10,4 @@ MergeSimplificationResultsToInputEquationsCommand = "cat SimplificationResult* |
 MergeSimplificationResultsToUndeterminedResults = "cat SimplificationResult* UndeterminedResultsCopy | python3.3 Jobs/MergeSimplificationUndeterminedResultsJob.py reduce | sort -k1,1 -n | cat > UndeterminedResults"
 CollectFinalResultsCommand = "cat MergedResults FinalResultsCopy | python3.3 Jobs/CollectFinalResultsJob.py reduce | cat > FinalResults"
 ReplaceVariablesWithFinalResultsCommand = "cat FinalResults InitInputEquations | sort -k1,1 -n | python3.3 Jobs/ReplaceVariablesWithResultsJob.py reduce | cat > InputEquations"
-MergeFinalSystemResultsCommand = "cat FinalResults UndeterminedResults | sort -k2,2 -n | python3.3 Jobs/MergeFinalSystemResultsJob.py mergeFinalSystemResults | cat > Results"
+MergeFinalSystemResultsCommand = "cat FinalResults UndeterminedResults | sort -k2,2 -n | python3.3 Jobs/MergeFinalSystemResultsJob.py reduce | cat > Results"

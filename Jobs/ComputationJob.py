@@ -4,8 +4,11 @@ import sys
 
 from sympy.solvers import solve
 from sympy import expand
+from sympy import Equality
+from sympy.core import numbers
 
 from Jobs.Utils import *
+from sympy import Symbol
 
 
 class ComputationJob:
@@ -39,24 +42,31 @@ class ComputationJob:
 			equationInPartIndex += 1
 
 	def reduce(self):
-		equations = []
 		index = 0
-		for equationLine in sys.stdin:
-			index, indexInPart, equation = equationLine.strip().split('\t')
-			equations.append(equation)
-		# compute variables to find
 		variablesToFind = []
-		symbolsSet = set()
-		for equation in equations:
-			symbols = getSymbolsList(equation)
-			for symbol in symbols:
-				symbolsSet.add(symbol)
-		varCount, indexesBySymbols, symbolsByIndexes = processSymbols(equations)
-		indexes = list([indexesBySymbols.get(symbol) for symbol in symbolsSet])
+		equations = []
+		expressions = []
+		symbols = set()
+		for line in sys.stdin:
+			index, indexInPart, equation = line.strip().split('\t')
+			strEqSymbols = getSymbolsList(equation)
+			expressions.append(expand(equation, power_exp=False, power_base=False, log=False))
+			[symbols.add(symbol) for symbol in strEqSymbols]
+
+			symbolPairs = [(getSymbolIndex(symbol), symbol) for symbol in symbols]
+			symbolsByIndexes = dict((symbol, index) for symbol, index in symbolPairs)
+			indexesBySymbols = dict((index, symbol) for symbol, index in symbolPairs)
+
+		indexes = list([indexesBySymbols.get(symbol) for symbol in symbols])
 		indexes.sort()
 		for i in range(len(indexes)):
 			variablesToFind.append(symbolsByIndexes.get(indexes[-1]))
 			indexes.pop()
+		while len(expressions) > 0:
+			equation = Equality(expressions[0], 0, variablesToFind)
+			equations.append(equation)
+			del expressions[0]
+
 		# compute equations part
 		variables = solve(equations, variablesToFind, rational=True, quick=True, minimal=True, simplify=False)
 		if len(variables) > 0:
@@ -65,23 +75,28 @@ class ComputationJob:
 				strValue = str(variables[variable])
 				if checkIfResultReady(strValue):
 					finalResults[str(variable)] = strValue
-			tempResults = dict((str(key), value) for key, value in variables.items())
+			tempResults = {}
+			for variableKey in variables.keys():
+				if not variables[variableKey].is_Number:
+					tempResults[str(variableKey)] = variables[variableKey].as_poly()
+				else:
+					tempResults[str(variableKey)] = variables[variableKey]
 
 			# simplify equation result
 			resultKeys = sortSymbols(list(tempResults.keys()), indexesBySymbols, symbolsByIndexes)
 			for variableToReplace in resultKeys:
 				for variableWhichReplace in resultKeys:
 					if variableToReplace != variableWhichReplace:
-						newValue = '(' + str(tempResults[variableToReplace]) + ')'
-						originalEquation = str(tempResults[variableWhichReplace])
-						symbols = list(getSymbolsList(originalEquation))
-						if symbols.__contains__(variableToReplace):
-							tempResults[variableWhichReplace] = tempResults(originalEquation, variableToReplace,
-																			newValue)
-			for variable in resultKeys:
-				tempResults[variable] = expand(tempResults[variable], power_exp=False, log=False)
-
-			results = dict((key, tempResults[str(key)]) for key in variables.keys())
+						if tempResults[variableWhichReplace].has(Symbol(variableToReplace)):
+							simplifiedResult = tempResults[variableWhichReplace].replace(Symbol(variableToReplace), tempResults[variableToReplace])
+							if not isinstance(simplifiedResult, numbers.Zero):
+								tempResults[variableWhichReplace] = simplifiedResult
+			results = {}
+			for variableKey in tempResults.keys():
+				if tempResults[variableKey].is_Poly:
+					results[str(variableKey)] = tempResults[variableKey].args[0]
+				else:
+					results[str(variableKey)] = tempResults[variableKey]
 			results = dict(list(finalResults.items()) + list(results.items()))
 			for result in results.keys():
 				print('{0}\t{1}\t{2}'.format(str(index), str(result), str(results[result])))

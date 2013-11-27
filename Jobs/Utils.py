@@ -3,12 +3,12 @@ import re
 
 # Gets symbol index
 def getSymbolIndex(symbol):
-	return int(re.search('(?<=f\(x_)(.*)(?=\))', symbol).group())
+	return int(re.search('[0-9]+', symbol).group())
 
 
 # Gets symbols list from equation
 def getSymbolsList(expr):
-	return re.findall('f\\(.*?\\)', expr)
+	return re.findall('_x[0-9]+_', expr)
 
 
 # Replaces one symbol by another one
@@ -19,7 +19,7 @@ def replaceSymbol(expr, original, replace):
 
 # Check if expression has some symbols, if not then result is ready
 def checkIfResultReady(expr):
-	regex = 'f\\(.*?\\)'
+	regex = '_x[0-9]+_'
 	return len(re.findall(regex, expr)) == 0
 
 
