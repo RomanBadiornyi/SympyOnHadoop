@@ -1,13 +1,11 @@
 #!/usr/bin/env python3.3
 
 import sys
-import base64
-import pickle
-
-from Jobs.Utils import *
-from sympy import Symbol
+from glob import glob
+from sympy import Poly
 from sympy.core import numbers
 from sympy.solvers import solve
+from Jobs.Utils import *
 
 
 class ComputationJob:
@@ -15,29 +13,34 @@ class ComputationJob:
 		return
 
 	def reduce(self, reducerNumber, debug=False, inputFilename=None, outputFilename=None):
-		index = 0
 		variablesToFind = []
 		equations = []
-		symbols = set()
+		symbolsSet = set()
 		output = None
 		if debug:
-			input = open(inputFilename, 'r')
+			inputList = [open(filename, "r") for filename in glob(inputFilename)]
 			output = open(outputFilename, 'w')
 		else:
-			input = sys.stdin
+			inputList = [sys.stdin]
 
-		for line in input:
-			index, indexInPart, strEquation = line.strip().split('\t')
-			if not debug or index == str(reducerNumber):
-				equation = pickle.loads(base64.b64decode(strEquation.encode("latin1")))
-				equations.append(equation)
-				[symbols.add(symbol) for symbol in list(equation.free_symbols)]
+		for input in inputList:
+			for line in input:
+				blockNumber, indexInPart, strEquation = line.strip().split('\t')
+				if not debug or blockNumber == str(reducerNumber):
+					equation, symbols = decodeExpression(strEquation)
 
-		symbols = list(symbols)
-		symbolPairs = [(getSymbolIndex(str(symbol)), symbol) for symbol in symbols]
+					[symbolsSet.add(symbol) for symbol in equation.free_symbols]
+
+					equation = Poly(equation, symbols)
+					equations.append(equation)
+
+			if debug:
+				input.close()
+		symbolsList = list(symbolsSet)
+		symbolPairs = [(getSymbolIndex(str(symbol)), symbol) for symbol in symbolsList]
 		symbolsByIndexes = dict((symbol, index) for symbol, index in symbolPairs)
 		indexesBySymbols = dict((index, symbol) for symbol, index in symbolPairs)
-		indexes = list([indexesBySymbols.get(symbol) for symbol in symbols])
+		indexes = list([indexesBySymbols.get(symbol) for symbol in symbolsList])
 		indexes.sort()
 		for i in range(len(indexes)):
 			variablesToFind.append(symbolsByIndexes.get(indexes[-1]))
@@ -50,13 +53,10 @@ class ComputationJob:
 			for variable in variables:
 				strValue = str(variables[variable])
 				if checkIfResultReady(strValue):
-					finalResults[str(variable)] = strValue
+					finalResults[variable] = strValue
 			tempResults = {}
 			for variableKey in variables.keys():
-				if not variables[variableKey].is_Number:
-					tempResults[variableKey] = variables[variableKey].as_poly()
-				else:
-					tempResults[variableKey] = variables[variableKey]
+				tempResults[variableKey] = variables[variableKey]
 
 			# simplify equation result
 			indexes = [indexesBySymbols.get(symbol) for symbol in list(tempResults.keys())]
@@ -66,23 +66,31 @@ class ComputationJob:
 				for variableWhichReplace in resultKeys:
 					if variableToReplace != variableWhichReplace:
 						if tempResults[variableWhichReplace].has(variableToReplace):
-							simplifiedResult = tempResults[variableWhichReplace].replace(variableToReplace, tempResults[variableToReplace])
+							simplifiedResult = tempResults[variableWhichReplace].subs(variableToReplace, tempResults[variableToReplace])
 							if not isinstance(simplifiedResult, numbers.Zero):
 								tempResults[variableWhichReplace] = simplifiedResult
 			results = {}
 			for variableKey in tempResults.keys():
 				if tempResults[variableKey].is_Poly:
-					results[str(variableKey)] = tempResults[variableKey].args[0]
+					results[variableKey] = tempResults[variableKey].args[0]
 				else:
-					results[str(variableKey)] = tempResults[variableKey]
+					results[variableKey] = tempResults[variableKey]
 			results = dict(list(finalResults.items()) + list(results.items()))
 			for result in results.keys():
-				if output is not None:
-					output.write('{0}\t{1}\t{2}\n'.format(str(index), str(result), str(results[result])))
+				if result in finalResults:
+					if output is not None:
+						output.write('{0}\t{1}\t{2}\n'.format(getSymbolIndex(str(result)), encodeExpression(result),
+															  encodeExpression(results[result])))
+					else:
+						print('{0}\t{1}\t{2}\n'.format(getSymbolIndex(str(result)), encodeExpression(result),
+													   encodeExpression(results[result])))
 				else:
-					print('{0}\t{1}\t{2}'.format(str(index), str(result), str(results[result])))
-		if debug:
-			input.close()
+					if output is not None:
+						output.write('{0}\t{1}\t{2}\t{3}\n'.format(str(reducerNumber), getSymbolIndex(str(result)),
+																   encodeExpression(result), encodeExpression(results[result])))
+					else:
+						print('{0}\t{1}\t{2}\t{3}'.format(str(reducerNumber), getSymbolIndex(str(result)),
+														  encodeExpression(result), encodeExpression(results[result])))
 		if output is not None:
 			output.close()
 
@@ -90,6 +98,9 @@ class ComputationJob:
 if __name__ == "__main__":
 	Job = ComputationJob()
 	if sys.argv[1] == "map":
-		Job.map(sys.argv[2:])
+		Job.map()
 	elif sys.argv[1] == "reduce":
-		Job.reduce(sys.argv[2:])
+		if len(sys.argv[2:]) > 1:
+			Job.reduce(reducerNumber=sys.argv[2], debug=sys.argv[3], inputFilename=sys.argv[4], outputFilename=sys.argv[5])
+		else:
+			Job.reduce(reducerNumber=sys.argv[2])

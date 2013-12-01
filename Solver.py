@@ -7,7 +7,21 @@ from datetime import datetime
 from datetime import timedelta
 
 from Commands import *
-from Jobs.Utils import *
+
+from Jobs.SerializeSymbols import SerializeSymbolsJob
+from Jobs.SerializeEquations import SerializeEquations
+from Jobs.SplitEquations import SplitEquations
+from Jobs.ComputeEquations import ComputationJob
+from Jobs.PrepareResults import PrepareResults
+from Jobs.CalculateFinalResults import CalculateFinalResults
+from Jobs.SimplifyEquations import SimplifyEquationsJob
+from Jobs.MergeSimplifiedEquations import MergeSimplifiedEquations
+from Jobs.MergeUndeterminedResults import MergeUndeterminedResults
+from Jobs.CollectFinalResults import CollectFinalResults
+from Jobs.ReplaceVariablesWithResults import ReplaceVariablesWithResults
+from Jobs.MergeFinalSystemResults import MergeFinalSystemResults
+
+Debug = False
 
 
 def HELP_FUNCTION_GET_BLOCKS_COUNT(input):
@@ -23,164 +37,260 @@ def HELP_FUNCTION_GET_BLOCKS_COUNT(input):
 		return int(partIndex) + 1
 
 
+def RunSymbolsSerializationJob():
+	if Debug:
+		job = SerializeSymbolsJob()
+		job.reduce(Debug, InitInputEquationsFileName, SerializeSymbolsFileName)
+	else:
+		p = subprocess.Popen(SerializeSymbolsCommand.format(InitInputEquationsFileName, SerializeSymbolsFileName), shell=True)
+		p.wait()
+
+
+def RunEquationSerializationJob():
+	if Debug:
+		job = SerializeEquations()
+		job.reduce(Debug, SerializeSymbolsFileName, InitInputEquationsFileName, SerializeEquationsFileName)
+	else:
+		p = subprocess.Popen(SerializeEquationsCommand.format(SerializeSymbolsFileName, InitInputEquationsFileName,
+															  SerializeEquationsFileName), shell=True)
+		p.wait()
+
+
+def RunSplitEquationsJob():
+	Debug=True
+	operationStart = datetime.now()
+	if Debug:
+		job = SplitEquations()
+		job.reduce(Debug, SerializeEquationsFileName, SplitEquationsFileName)
+	else:
+		p = subprocess.Popen(SplitEquationsCommand.format(SerializeEquationsFileName, SplitEquationsFileName), shell=True)
+		p.wait()
+	operationEnd = datetime.now()
+	time = operationEnd - operationStart
+	print("Splitting equations to blocks finished, execution time: {0}\n".format(str(time)))
+	return time
+
+
+def RunComputationJobs(reducersCount):
+	Debug = True
+	operationStart = datetime.now()
+	if Debug:
+		job = ComputationJob()
+		for reducerNumber in range(reducersCount):
+			job.reduce(reducerNumber, Debug, SplitEquationsFileName, OutputResultsFileName + str(reducerNumber))
+	else:
+		processesList = []
+		for reducerNumber in range(reducersCount):
+			p = subprocess.Popen(ComputeEquationBlockCommand.format(reducerNumber, SplitEquationsFileName,
+																	OutputResultsFileName), shell=True)
+			processesList.append(p)
+		[p.wait() for p in processesList]
+
+	operationEnd = datetime.now()
+	time = operationEnd - operationStart
+	print("Computing results in blocks finished, execution time: {0}\n".format(str(time)))
+	return time
+
+
+def RunCalculateFinalResultsJob():
+	operationStart = datetime.now()
+	if Debug:
+		job = CalculateFinalResults()
+		job.reduce(Debug, OutputResultsFileName + "*", PreparedResultsFileName)
+	else:
+		p = subprocess.Popen(CalculateFinalResultsCommand.format(OutputResultsFileName + "*", FinalResultsCountFileName),
+							 shell=True)
+		p.wait()
+	countFile = open(FinalResultsCountFileName, "r")
+	line = countFile.readline()
+	finalResultsCount = int(line)
+	operationEnd = datetime.now()
+	time = operationEnd - operationStart
+	print("Calculation of final results count finished, execution time: {0}\n".format(str(time)))
+	return time, finalResultsCount
+
+
+def RunPrepareResultsJob(reducersCount):
+	operationStart = datetime.now()
+	if Debug:
+		job = PrepareResults()
+		job.map(reducersCount, Debug, OutputResultsFileName + "*", PreparedResultsFileName)
+	else:
+		p = subprocess.Popen(PrepareResultsCommand.format(reducersCount, OutputResultsFileName + "*", PreparedResultsFileName),
+							 shell=True)
+		p.wait()
+	operationEnd = datetime.now()
+	time = operationEnd - operationStart
+	print("Results prepared for simplification: {0}\n".format(str(time)))
+	return time
+
+
+def RunResultSimplificationJob(blocksCount):
+	operationStart = datetime.now()
+	if Debug:
+		job = SimplifyEquationsJob()
+		job.map(Debug, SplitEquationsFileName, OutputResultsFileName + "*", PreparedResultsFileName,
+				ResultsForSimplificationFileName)
+		for currentBlock in range(blocksCount):
+			job = SimplifyEquationsJob()
+			job.reduce(currentBlock, Debug, ResultsForSimplificationFileName, ResultsForSimplificationFileName + str(currentBlock))
+	else:
+		p = subprocess.Popen(SimplifyEquationsMapCommand.format(SplitEquationsFileName, OutputResultsFileName + "*",
+														  	    PreparedResultsFileName, ResultsForSimplificationFileName),
+							 shell=True)
+		p.wait()
+		processesList = []
+		for currentBlock in range(blocksCount):
+			p = subprocess.Popen(SimplifyEquationsReduceCommand.format(currentBlock, ResultsForSimplificationFileName),
+								 shell=True)
+			processesList.append(p)
+		[p.wait() for p in processesList]
+	operationEnd = datetime.now()
+	time = operationEnd - operationStart
+	print("Results simplification finished, execution time: {0}\n".format(str(time)))
+	os.system("rm {0}".format(ResultsForSimplificationFileName))
+	return time
+
+
+def RunMergingSimplificationResultsJob():
+	operationStart = datetime.now()
+	if Debug:
+		job = MergeSimplifiedEquations()
+		job.map(Debug, ResultsForSimplificationFileName + "*", MergedResultsFileName)
+		p = subprocess.Popen(MergeSimplifiedEquationsReduceCommand.format(MergedResultsFileName, SerializeEquationsFileName),
+							 shell=True)
+		p.wait()
+		os.system("cp {0} {0}Copy".format(UndeterminedResultsFileName))
+		job = MergeUndeterminedResults()
+		job.map(Debug, ResultsForSimplificationFileName + "*", UndeterminedResultsFileName + "Copy",
+				UndeterminedResultsFileName)
+	else:
+		p = subprocess.Popen(MergeSimplifiedEquationsMapCommand.format(ResultsForSimplificationFileName + "*",
+																MergedResultsFileName),
+							 shell=True)
+		p.wait()
+		p = subprocess.Popen(MergeSimplifiedEquationsReduceCommand.format(MergedResultsFileName, SerializeEquationsFileName),
+							 shell=True)
+		p.wait()
+		os.system("cp {0} {0}Copy".format(UndeterminedResultsFileName))
+		p = subprocess.Popen(MergeUndeterminedResultsCommand.format(ResultsForSimplificationFileName + "*",
+																	UndeterminedResultsFileName + "Copy",
+																	UndeterminedResultsFileName), shell=True)
+		p.wait()
+	os.system("rm {0}Copy".format(UndeterminedResultsFileName))
+	operationEnd = datetime.now()
+	time = operationEnd - operationStart
+	print("Merging of simplification results finished, execution time: {0}\n".format(str(time)))
+	return time
+
+
+def RunReplacingResultsJob():
+	operationStart = datetime.now()
+	if Debug:
+		os.system("cp {0} {0}Copy".format(FinalResultsFileName))
+		job = CollectFinalResults()
+		job.map(Debug, OutputResultsFileName + "*", FinalResultsFileName + "Copy",
+				FinalResultsFileName)
+		job = ReplaceVariablesWithResults()
+		job.reduce(Debug, FinalResultsFileName, SerializeInitEquationsFileName, SerializeEquationsFileName)
+	else:
+		os.system("cp {0} {0}Copy".format(FinalResultsFileName))
+		p = subprocess.Popen(CollectFinalResultsCommand.format(OutputResultsFileName + "*",
+															   FinalResultsFileName + "Copy",
+															   FinalResultsFileName), shell=True)
+		p.wait()
+		p = subprocess.Popen(ReplaceVariablesWithFinalResultsCommand.format(FinalResultsFileName,
+																			SerializeInitEquationsFileName,
+																			SerializeEquationsFileName), shell=True)
+		p.wait()
+
+	os.system("rm {0}Copy".format(FinalResultsFileName))
+	operationEnd = datetime.now()
+	time = operationEnd - operationStart
+	print("Results in equations replaced: {0}\n".format(str(time)))
+	return time
+
+
+def RunMergingFinalSystemResultsJob():
+	if Debug:
+		job = MergeFinalSystemResults()
+		job.reduce(Debug, FinalResultsFileName, UndeterminedResultsFileName, ResultsFileName)
+	else:
+		p = subprocess.Popen(MergeFinalSystemResultsCommand.format(FinalResultsFileName, UndeterminedResultsFileName,
+																   ResultsFileName), shell=True)
+		p.wait()
+
+
 def hadoopSimulation(args):
 	start = datetime.now()
-
-	os.system("rm -f FinalResults")
 
 	resultsCount = 0
 	equationsExists = True
 
-	p = subprocess.Popen(MapInitDataCommand, shell=True)
-	p.wait()
-
 	SplittingToBlocksTotal = timedelta(0)
 	ComputingResultsTotal = timedelta(0)
-	MergingResultsTotal = timedelta(0)
-	JoiningResultsTotal = timedelta(0)
-	ResultSimplificationTotal = timedelta(0)
-	MergingResultSimplificationTotal = timedelta(0)
+	PrepareResultsTotal = timedelta(0)
+	SimplificationResultsTotal = timedelta(0)
+	FinalResultsCalculationTotal = timedelta(0)
 	ReplacingWithResultsTotal = timedelta(0)
 
 	print("Start computation: {0}\n".format(str(datetime.now())))
 
-	os.system("touch UndeterminedResults")
-	os.system("touch FinalResults")
+	os.system("touch {0}".format(UndeterminedResultsFileName))
+	os.system("touch {0}".format(FinalResultsFileName))
+
+	RunSymbolsSerializationJob()
+	RunEquationSerializationJob()
+
+	os.system("cp {0} {1}".format(SerializeEquationsFileName, SerializeInitEquationsFileName))
+	os.system("rm {0}".format(SerializeSymbolsFileName))
 
 	while equationsExists:
-		operationStart = datetime.now()
-		p = subprocess.Popen(SplitEquationsCommand, shell=True)
-		p.wait()
-		operationEnd = datetime.now()
-		time = operationEnd - operationStart
-		SplittingToBlocksTotal += time
-		blocksCount = HELP_FUNCTION_GET_BLOCKS_COUNT('InputEquationsSplit')
-		print("Splitting equations to blocks finished, execution time: {0}, blocks count: {1}\n".format(str(time), blocksCount))
+		SplittingToBlocksTotal += RunSplitEquationsJob()
+		blocksCount = HELP_FUNCTION_GET_BLOCKS_COUNT('{0}'.format(SplitEquationsFileName))
 
 		if blocksCount == 0:
 			equationsExists = False
 
-		operationStart = datetime.now()
 		if not equationsExists:
 			break
 
-		processesList = []
-		for reducerNumber in range(blocksCount):
-			p = subprocess.Popen(ComputeEquationBlockCommand.format(reducerNumber), shell=True)
-			processesList.append(p)
-		[p.wait() for p in processesList]
+		ComputingResultsTotal += RunComputationJobs(blocksCount)
 
-		operationEnd = datetime.now()
-		time = operationEnd - operationStart
-		ComputingResultsTotal += time
-		print("Computing results in blocks finished, execution time: {0}\n".format(str(time)))
-
-		operationStart = datetime.now()
-		p = subprocess.Popen(MergeResultsCommand, shell=True)
-		p.wait()
-
-		os.system("rm OutputResults*")
-		finalResultsCount = getFinalResultsCount("MergedResults")
+		time, finalResultsCount = RunCalculateFinalResultsJob()
+		os.system("rm {0}".format(FinalResultsCountFileName))
 		resultsCount += finalResultsCount
-		operationEnd = datetime.now()
-		time = operationEnd - operationStart
-		MergingResultsTotal += time
-		print("Merging results finished, execution time: {0}\n".format(str(time)))
+		FinalResultsCalculationTotal += time
 
 		if finalResultsCount == 0:
-			operationStart = datetime.now()
-			blocksCount = getBlocksCount("InputEquationsSplit")
-			p = subprocess.Popen(MapResultsForSimplificationCommand.format(blocksCount), shell=True)
-			p.wait()
-			p = subprocess.Popen(JoinResultsWithEquationsCommand, shell=True)
-			p.wait()
-			p = subprocess.Popen(JoinEquationsWithResultForSimplificationCommand, shell=True)
-			p.wait()
-
-			os.system("rm ResultsForSimplification")
-			os.system("rm EquationsWithResults")
-
-			operationEnd = datetime.now()
-			time = operationEnd - operationStart
-			JoiningResultsTotal += time
-			print("Joining results with equations finished, execution time: {0}\n".format(str(time)))
-
-			operationStart = datetime.now()
-			processesList = []
-			for blockNumber in range(blocksCount):
-				p = subprocess.Popen(SimplifyEquationsCommand.format(blockNumber), shell=True)
-				processesList.append(p)
-			[p.wait() for p in processesList]
-			operationEnd = datetime.now()
-			time = operationEnd - operationStart
-			ResultSimplificationTotal += time
-			print("Results simplification finished, execution time: {0}\n".format(str(time)))
-
-			operationStart = datetime.now()
-			os.system("rm EquationsWithResultsForSimplification")
-			p = subprocess.Popen(MergeSimplificationResultsToInputEquationsCommand, shell=True)
-			p.wait()
-			os.system("cp UndeterminedResults UndeterminedResultsCopy")
-			p = subprocess.Popen(MergeSimplificationResultsToUndeterminedResults, shell=True)
-			p.wait()
-			os.system("rm UndeterminedResultsCopy")
-			operationEnd = datetime.now()
-			time = operationEnd - operationStart
-			MergingResultSimplificationTotal += time
-			print("Merging of simplification results finished, execution time: {0}\n".format(str(time)))
-			os.system("rm SimplificationResult*")
+			PrepareResultsTotal += RunPrepareResultsJob(blocksCount)
+			SimplificationResultsTotal += RunResultSimplificationJob(blocksCount)
+			FinalResultsCalculationTotal += RunMergingSimplificationResultsJob()
+			os.system("rm {0}*".format(OutputResultsFileName))
+			os.system("rm {0}*".format(ResultsForSimplificationFileName))
+			os.system("rm {0}".format(PreparedResultsFileName))
+			os.system("rm {0}".format(MergedResultsFileName))
+			os.system("rm {0}".format(SplitEquationsFileName))
 		else:
-			operationStart = datetime.now()
-			os.system("cp FinalResults FinalResultsCopy")
-			p = subprocess.Popen(CollectFinalResultsCommand, shell=True)
-			p.wait()
-			os.system("rm FinalResultsCopy")
-			p = subprocess.Popen(ReplaceVariablesWithFinalResultsCommand, shell=True)
-			p.wait()
-			operationEnd = datetime.now()
-			time = operationEnd - operationStart
-			ReplacingWithResultsTotal += time
-			print("Results in equations replaced: {0}\n".format(str(time)))
-		os.system("rm MergedResults")
-	p = subprocess.Popen(MergeFinalSystemResultsCommand, shell=True)
-	p.wait()
-	os.system("rm InputEquations")
-	os.system("rm InputEquationsSplit")
-	os.system("rm FinalResults")
-	os.system("rm UndeterminedResults")
+			ReplacingWithResultsTotal += RunReplacingResultsJob()
+			os.system("rm {0}*".format(OutputResultsFileName))
+			os.system("rm {0}".format(SplitEquationsFileName))
+	RunMergingFinalSystemResultsJob()
+	os.system("rm {0}".format(SerializeInitEquationsFileName))
+	os.system("rm {0}".format(UndeterminedResultsFileName))
+	os.system("rm {0}".format(SerializeEquationsFileName))
+	os.system("rm {0}".format(SplitEquationsFileName))
+	os.system("rm {0}".format(FinalResultsFileName))
 
 	end = datetime.now()
 	print('Execution time is: {0}'.format(str(end - start)))
-	print('{0} ,Total execution time is: {1}'.format("Splitting to block operation", SplittingToBlocksTotal))
-	print('{0} ,Total execution time is: {1}'.format("Computing results operation", ComputingResultsTotal))
-	print('{0} ,Total execution time is: {1}'.format("Merging results operation", MergingResultsTotal))
-	print('{0} ,Total execution time is: {1}'.format("Joining results operation", JoiningResultsTotal))
-	print('{0} ,Total execution time is: {1}'.format("Results simplification operation", ResultSimplificationTotal))
-	print('{0} ,Total execution time is: {1}'.format("Merging simplified results operation", MergingResultSimplificationTotal))
-	print('{0} ,Total execution time is: {1}'.format("Replacing variables with results operation", ReplacingWithResultsTotal))
-
-
-def getFinalResultsCount(resultsFile):
-	resultsFile = open(resultsFile, 'r')
-	count = 0
-	for resultLine in resultsFile:
-		blockIndex, resultIndex, resultSymbol, result = resultLine.strip().split('\t')
-		if checkIfResultReady(result):
-			count += 1
-	return count
-
-
-def getBlocksCount(splitEquationsFile):
-	splitEquationsFile = open(splitEquationsFile, 'r')
-	partIndex = 0
-	lineCount = 0
-	for equationLine in splitEquationsFile:
-		lineCount += 1
-		partIndex, equationIndex, equation = equationLine.strip().split('\t')
-	if lineCount == 0:
-		return 0
-	else:
-		return int(partIndex) + 1
+	totalLabel = 'Total execution time is:'
+	print('{0}, {1} {2}'.format("Splitting to block operation", totalLabel, SplittingToBlocksTotal))
+	print('{0}, {1} {2}'.format("Computing results operation", totalLabel, ComputingResultsTotal))
+	print('{0}, {1} {2}'.format("Preparing results for simplification operation", totalLabel, PrepareResultsTotal))
+	print('{0}, {1} {2}'.format("Results simplification operation", totalLabel, SimplificationResultsTotal))
+	print('{0}, {1} {2}'.format("Analyze simplified results operation", totalLabel, FinalResultsCalculationTotal))
+	print('{0}, {1} {2}'.format("Replacing variables with results operation", totalLabel, ReplacingWithResultsTotal))
 
 
 if __name__ == "__main__":
