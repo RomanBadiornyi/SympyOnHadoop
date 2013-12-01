@@ -12,7 +12,13 @@ class SimplifyEquationsJob:
 	def map(self):
 		return
 
-	def reduce(self):
+	def reduce(self, debug, inputFilename, outputFilename):
+		output = None
+		if debug:
+			input = open(inputFilename, 'r')
+			output = open(outputFilename, 'a')
+		else:
+			input = sys.stdin
 		blockResults = {}
 		blockEquations = {}
 		indexesBySymbols = {}
@@ -49,12 +55,22 @@ class SimplifyEquationsJob:
 				replacedEquation = expand(strReplacedEquation, power_exp=False, log=False)
 				if not isinstance(replacedEquation, numbers.Zero):
 					blockEquations[equationIndex] = str(replacedEquation)
-					print("{0}\t{1}\t{2}".format(block, equationIndex, blockEquations[equationIndex]))
+					if output is not None:
+						output.write("{0}\t{1}\t{2}\n".format(block, equationIndex, blockEquations[equationIndex]))
+					else:
+						print("{0}\t{1}\t{2}".format(block, equationIndex, blockEquations[equationIndex]))
 				else:
 					undeterminedCount += 1
 			if undeterminedCount == len(blockEquations):
 				for key in blockResults.keys():
-					print("{0}\t{1}\t{2}\t{3}".format(block, getSymbolIndex(key), key, blockResults[key]))
+					if output is not None:
+						output.write("{0}\t{1}\t{2}\t{3}\n".format(block, getSymbolIndex(key), key, blockResults[key]))
+					else:
+						print("{0}\t{1}\t{2}\t{3}".format(block, getSymbolIndex(key), key, blockResults[key]))
+		if debug:
+			input.close()
+		if output is not None:
+			output.close()
 
 
 if __name__ == "__main__":
@@ -62,4 +78,4 @@ if __name__ == "__main__":
 	if sys.argv[1] == "map":
 		Job.map()
 	elif sys.argv[1] == "reduce":
-		Job.reduce()
+		Job.reduce(sys.argv[2:])
