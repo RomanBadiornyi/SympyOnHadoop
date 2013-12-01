@@ -96,7 +96,7 @@ def RunCalculateFinalResultsJob():
 	operationStart = datetime.now()
 	if Debug:
 		job = CalculateFinalResults()
-		job.reduce(Debug, OutputResultsFileName + "*", PreparedResultsFileName)
+		job.reduce(Debug, OutputResultsFileName + "*", FinalResultsCountFileName)
 	else:
 		p = subprocess.Popen(CalculateFinalResultsCommand.format(OutputResultsFileName + "*", FinalResultsCountFileName),
 							 shell=True)
